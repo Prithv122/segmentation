@@ -101,7 +101,27 @@ Train the U-Net: open `notebooks/train_kaggle.ipynb` on Kaggle (GPU T4, Internet
 
 ## 7. What I'd change at 100× scale
 
-_To be written with the results._
+At 100× (6,500 scenes, or one continent re-mapped every Sentinel-2 revisit), the bottlenecks move
+in this order:
+
+1. **Data access, first.** Here, Zenodo's ~0.5 MB/s per connection forced a mirror and 512 px
+   window reads. At scale, read Cloud-Optimised GeoTIFFs straight from a cloud bucket next to the
+   compute (Sentinel-2 L2A COGs on AWS Open Data), and replace `ThreadPoolExecutor` with a
+   distributed map (Dask or Ray) over scene × window. The manifest-plus-content-hash contract stays
+   as it is: it is what makes a rebuild on other machines checkable.
+2. **Labels, not compute.** 65 hand-labelled scenes are the real limit. The next step is weak
+   labels from the threshold itself (NDWI-Otsu is at 0.96 IoU on clear water), with humans
+   labelling only where the methods disagree: wetlands, flooded vegetation, shadow, turbid water.
+3. **Evaluation by stratum.** Pooled IoU is dominated by big lakes. At scale, report IoU per land
+   cover, per climate zone and per water type, with the scene bootstrap inside each stratum, and
+   gate a model release on its worst stratum, not on the pooled mean.
+4. **Serving.** A ResNet-34 U-Net is about 24 M parameters. Export it to ONNX and tile scenes with
+   overlap and blending to avoid seams at chip edges. Run the threshold first and send only
+   uncertain tiles (near the Otsu cut, or with vegetation in water) to the network.
+5. **Cloud masking becomes the method.** This dataset's hand-made valid masks hide clouds from
+   both methods. In production nobody hands you that mask, so a cloud and shadow model (or the L2A
+   scene classification) has to sit in front, and its errors have to be scored together with the
+   water model's.
 
 ---
 
