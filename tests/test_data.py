@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import replace
 
 import numpy as np
@@ -10,6 +9,7 @@ from segment.bands import BAND_INDEX, BANDS, IGNORE
 from segment.data import (
     MANIFEST_COLUMNS,
     check_splits,
+    content_sha256,
     load_chip,
     read_manifest,
     save_chip,
@@ -111,13 +111,14 @@ def test_save_chip_rejects_bad_mask_values(tmp_path):
         save_chip(tmp_path / "c.npz", image, mask)
 
 
-def test_save_chip_sha256_matches_file_and_round_trips(tmp_path):
+def test_save_chip_sha256_is_content_hash_and_round_trips(tmp_path):
     image, mask = _arrays()
     image[BAND_INDEX["nir"], 1, 2] = 4321
     mask[0, 0], mask[1, 1] = 1, IGNORE
     path = tmp_path / "sub" / "c.npz"
     sha = save_chip(path, image, mask)
-    assert sha == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert sha == content_sha256(*load_chip(path))
+    assert sha != content_sha256(image, np.ones_like(mask))
     got_image, got_mask = load_chip(path)
     assert np.array_equal(got_image, image) and np.array_equal(got_mask, mask)
 

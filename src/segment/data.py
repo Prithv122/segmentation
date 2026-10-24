@@ -128,19 +128,31 @@ def load_chip(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return image, mask
 
 
+def content_sha256(image: np.ndarray, mask: np.ndarray) -> str:
+    """Hash of the chip's arrays (shapes, dtypes and C-order bytes), not of the compressed file.
+
+    Compressed bytes depend on the zlib build, so a chip rebuilt on another machine is checked
+    against the manifest by content.
+    """
+    h = hashlib.sha256()
+    for arr in (image, mask):
+        h.update(f"{arr.dtype.str}{arr.shape}".encode())
+        h.update(np.ascontiguousarray(arr).tobytes())
+    return h.hexdigest()
+
+
 def save_chip(path: Path, image: np.ndarray, mask: np.ndarray) -> str:
-    """Write a compressed chip .npz and return the sha256 of the file bytes."""
+    """Write a compressed chip .npz and return its :func:`content_sha256`."""
     if image.dtype != np.uint16 or mask.dtype != np.uint8:
         raise ValueError("image must be uint16 and mask uint8")
     if not np.isin(mask, (0, 1, IGNORE)).all():
         raise ValueError("mask values must be 0, 1 or IGNORE")
     buf = io.BytesIO()
     np.savez_compressed(buf, image=image, mask=mask)
-    data = buf.getvalue()
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    return hashlib.sha256(data).hexdigest()
+    path.write_bytes(buf.getvalue())
+    return content_sha256(image, mask)
 
 
 def to_model_input(image: np.ndarray) -> np.ndarray:

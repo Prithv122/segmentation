@@ -12,23 +12,28 @@ import numpy as np
 
 from segment.metrics import Counts, bootstrap_ci, dice, iou, precision, recall
 
+N_BOOT = 2000
 SEED = 0
+BOOTSTRAP_UNIT = "scene"
 UNET = "unet"
 BASELINE = "ndwi_otsu"
 METHOD_ORDER = (UNET, BASELINE, "mndwi_otsu", "constant")
 SPLIT_ORDER = ("train", "val", "test")
 
-RULES = {
-    "H1": (
-        "gap = pooled test IoU(unet) - pooled test IoU(ndwi_otsu), paired chip-bootstrap 95% CI. "
-        "supported if CI lower bound >= min_gap_iou; not supported if CI upper bound < "
-        "min_gap_iou; inconclusive otherwise."
-    ),
-    "H2": (
-        "drop = pooled IoU(unet, val) - pooled IoU(unet, test). poor generalisation if "
-        "drop > max_drop_iou; within bound otherwise."
-    ),
-}
+
+def _rules(n_boot: int) -> dict[str, str]:
+    return {
+        "H1": (
+            "gap = pooled test IoU(unet) - pooled test IoU(ndwi_otsu), with a paired 95% "
+            f"scene-bootstrap CI (scenes resampled with replacement, {n_boot} replicates, "
+            f"seed {SEED}). supported if CI lower bound >= min_gap_iou; not supported if CI "
+            "upper bound < min_gap_iou; inconclusive otherwise."
+        ),
+        "H2": (
+            "drop = pooled IoU(unet, val) - pooled IoU(unet, test). poor generalisation if "
+            "drop > max_drop_iou; within bound otherwise."
+        ),
+    }
 
 
 def _read_rows(results_dir: Path) -> list[dict]:
@@ -66,9 +71,11 @@ def _group_stats(rows: list[dict], n_boot: int) -> dict:
     scenes: dict[str, list[Counts]] = defaultdict(list)
     for r in rows:
         scenes[r["scene"]].append(r["counts"])
-    lo, hi = bootstrap_ci(counts, iou, n_boot=n_boot, seed=SEED)
+    scene_counts = [_pooled(c) for _, c in sorted(scenes.items())]
+    lo, hi = bootstrap_ci(scene_counts, iou, n_boot=n_boot, seed=SEED)
     return {
         "n_chips": len(rows),
+        "n_scenes": len(scenes),
         "counts": {"tp": total.tp, "fp": total.fp, "fn": total.fn, "tn": total.tn},
         "iou": iou(total),
         "iou_ci": [lo, hi],
@@ -87,16 +94,27 @@ def _as_counts(row: np.ndarray) -> Counts:
     return Counts(*(int(v) for v in row))
 
 
-def _paired_gap(a: dict[str, Counts], b: dict[str, Counts], n_boot: int) -> dict | None:
-    """Pooled IoU(a) - pooled IoU(b) over chips present in both; one index draw per replicate."""
+def _paired_gap(
+    a: dict[str, tuple[str, Counts]], b: dict[str, tuple[str, Counts]], n_boot: int
+) -> dict | None:
+    """Pooled IoU(a) - pooled IoU(b) over chips present in both, bootstrapping scenes.
+
+    Per-chip counts are summed within each scene (common chips only); each replicate draws one
+    set of scene indices shared by both methods.
+    """
     ids = sorted(set(a) & set(b))
     if not ids:
         return None
-    ca = np.array([[a[i].tp, a[i].fp, a[i].fn, a[i].tn] for i in ids], dtype=np.int64)
-    cb = np.array([[b[i].tp, b[i].fp, b[i].fn, b[i].tn] for i in ids], dtype=np.int64)
+    scenes = sorted({a[i][0] for i in ids})
+    ca = np.zeros((len(scenes), 4), dtype=np.int64)
+    cb = np.zeros((len(scenes), 4), dtype=np.int64)
+    for i in ids:
+        k = scenes.index(a[i][0])
+        ca[k] += [a[i][1].tp, a[i][1].fp, a[i][1].fn, a[i][1].tn]
+        cb[k] += [b[i][1].tp, b[i][1].fp, b[i][1].fn, b[i][1].tn]
     point = iou(_as_counts(ca.sum(axis=0))) - iou(_as_counts(cb.sum(axis=0)))
     rng = np.random.default_rng(SEED)
-    idx = rng.integers(0, len(ids), size=(n_boot, len(ids)))
+    idx = rng.integers(0, len(scenes), size=(n_boot, len(scenes)))
     sa, sb = ca[idx].sum(axis=1), cb[idx].sum(axis=1)
     diffs = np.array([iou(_as_counts(x)) - iou(_as_counts(y)) for x, y in zip(sa, sb, strict=True)])
     diffs = diffs[~np.isnan(diffs)]
@@ -104,7 +122,7 @@ def _paired_gap(a: dict[str, Counts], b: dict[str, Counts], n_boot: int) -> dict
         lo, hi = (float(q) for q in np.quantile(diffs, [0.025, 0.975]))
     else:
         lo = hi = float("nan")
-    return {"n_chips": len(ids), "point": float(point), "ci": [lo, hi]}
+    return {"n_chips": len(ids), "n_scenes": len(scenes), "point": float(point), "ci": [lo, hi]}
 
 
 def _drop(groups: dict, method: str) -> dict | None:
@@ -158,13 +176,13 @@ def _clean(obj):
     return obj
 
 
-def summarise(results_dir: Path, n_boot: int = 2000) -> dict:
+def summarise(results_dir: Path, n_boot: int = N_BOOT) -> dict:
     """Aggregate every ``per_chip_*.csv`` in ``results_dir``.
 
     For each (method, split): pooled IoU/Dice/precision/recall (pixel-weighted), macro IoU over
     chips (chips with no water in both target and prediction are excluded from the macro mean and
-    counted), per-scene pooled IoU, and a chip-bootstrap 95% CI of pooled IoU.
-    Also: the U-Net minus NDWI-Otsu IoU gap on test with a paired chip bootstrap CI, the U-Net's
+    counted), per-scene pooled IoU, and a scene-bootstrap 95% CI of pooled IoU.
+    Also: the U-Net minus NDWI-Otsu IoU gap on test with a paired scene bootstrap CI, the U-Net's
     val-to-test IoU drop, and the pre-registered verdicts read from ``prereg.json``.
     """
     results_dir = Path(results_dir)
@@ -178,7 +196,7 @@ def summarise(results_dir: Path, n_boot: int = 2000) -> dict:
         groups[method][split] = _group_stats(grp, n_boot)
 
     test_counts = {
-        m: {r["chip_id"]: r["counts"] for r in by_group[(m, "test")]}
+        m: {r["chip_id"]: (r["scene"], r["counts"]) for r in by_group[(m, "test")]}
         for m in (UNET, BASELINE)
         if (m, "test") in by_group
     }
@@ -194,11 +212,12 @@ def summarise(results_dir: Path, n_boot: int = 2000) -> dict:
     summary = {
         "n_boot": n_boot,
         "seed": SEED,
+        "bootstrap_unit": BOOTSTRAP_UNIT,
         "groups": dict(groups),
         "comparisons": comparisons,
         "prereg": prereg,
         "verdicts": _verdicts(prereg, comparisons),
-        "rules": RULES,
+        "rules": _rules(n_boot),
     }
     return _clean(summary)
 
@@ -216,8 +235,9 @@ def _render_md(summary: dict) -> str:
     methods = _ordered(list(groups), METHOD_ORDER)
     lines = ["# Results summary", ""]
     lines += [
-        "| method | split | chips | IoU [95% CI] | Dice | precision | recall | macro IoU |",
-        "|---|---|---:|---|---:|---:|---:|---|",
+        "| method | split | chips | scenes | IoU [95% scene-bootstrap CI] | Dice | precision "
+        "| recall | macro IoU |",
+        "|---|---|---:|---:|---|---:|---:|---:|---|",
     ]
     for m in methods:
         for s in _ordered(list(groups[m]), SPLIT_ORDER):
@@ -227,9 +247,15 @@ def _render_md(summary: dict) -> str:
             if g["n_nan_chips"]:
                 macro += f" ({g['n_nan_chips']} NaN chips excluded)"
             lines.append(
-                f"| {m} | {s} | {g['n_chips']} | {_f(g['iou'])} [{_f(lo)}, {_f(hi)}] "
+                f"| {m} | {s} | {g['n_chips']} | {g['n_scenes']} "
+                f"| {_f(g['iou'])} [{_f(lo)}, {_f(hi)}] "
                 f"| {_f(g['dice'])} | {_f(g['precision'])} | {_f(g['recall'])} | {macro} |"
             )
+    lines.append("")
+    lines.append(
+        f"CIs are 95% percentile {summary['bootstrap_unit']}-bootstrap intervals "
+        f"({summary['n_boot']} replicates, seed {summary['seed']})."
+    )
     lines.append("")
 
     comp = summary["comparisons"]
@@ -237,7 +263,8 @@ def _render_md(summary: dict) -> str:
     if gap is not None:
         lo, hi = gap["ci"]
         lines.append(
-            f"- Gap on test (unet - ndwi_otsu, pooled IoU, {gap['n_chips']} paired chips): "
+            "- Gap on test (unet - ndwi_otsu, pooled IoU, "
+            f"{gap['n_chips']} paired chips in {gap['n_scenes']} scenes): "
             f"{_f(gap['point'])} [{_f(lo)}, {_f(hi)}]"
         )
     for label, d in (("unet", comp["drop_unet"]), ("ndwi_otsu", comp["drop_ndwi_otsu"])):
