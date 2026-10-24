@@ -29,7 +29,8 @@ baselines and evaluation run on CPU.
 ## Conventions
 
 - `uv` for dependencies; `ruff check` + `ruff format`; `pytest` (`-m slow` trains a tiny CPU model).
-- No secrets in the repo; the project reads no env vars.
+- No secrets in the repo. The only env var is the optional `SEGMENT_GIT_COMMIT`, which the Kaggle
+  notebook sets so `run_record.json` names the commit it trained.
 - No chip, image or mask from the dataset is committed. Chips are rebuilt from Zenodo and checked
   by content hash (`segment verify`).
 
