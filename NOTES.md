@@ -43,6 +43,33 @@ Working notes: what broke, what was tried, why X over Y.
   correlated, so whole scenes are resampled and pooled IoU is recomputed per replicate. With
   16 test scenes the interval will be wide; that is the honest width.
 
+### 2026-10-25 — chips built, provenance, baselines, fresh-eyes review
+
+- **Chips:** 3,136 (2,112 / 512 / 512 over 33 / 16 / 16 scenes), every scene had its full
+  quota; `segment audit` clean; `segment verify` all match. Built from the mirror with 8 workers
+  in about 50 minutes, 4.6 GB.
+- **Mirror == Zenodo, shown three ways.** (1) `segment provenance`: 195/195 file sizes, 130/130
+  mask CRCs, 3/3 full image CRCs (one scene per split) match the Zenodo zip directory.
+  (2) Scene s071 rebuilt from the Zenodo zip itself gives a `records/s071.csv` byte-identical to the
+  mirror build (same chips, same content hashes). (3) The Zenodo rebuild hit a real dropped
+  connection and resumed correctly, which is why `_stream_member` resumes and counts only
+  failures that make no progress.
+- **Baselines fitted on train only:** NDWI-Otsu threshold 0.0064 (near the textbook 0), MNDWI-Otsu
+  0.133, constant = land. Val and test scored once, CSVs committed before any summary was read.
+- **Fresh-eyes review** (clean context, code and PREREG only) found no bug that changes a number.
+  Acted on before looking at any test summary:
+  - `segment eval` now refuses a duplicated per-chip CSV (e.g. a "(1)" re-download) and refuses to
+    compare U-Net and NDWI-Otsu if they scored different test chips.
+  - `segment baseline` verifies every chip hash before fitting.
+  - Kaggle install: rasterio no longer pinned to an exact version (Kaggle's Python may lack a
+    wheel for it) and `--ignore-requires-python` for the editable install. The source parses and
+    compiles on Python 3.11.
+- **Two reporting cautions from the review.** `best_val_iou` in `run_record.json` is computed under
+  fp16 autocast during training; the reported val IoU is the fp32 one from `segment predict`, so
+  never quote the run-record number. The val IoU belongs to the checkpoint val chose, so it runs
+  high and H2's drop is biased towards "poor generalisation"; PREREG calls H2 diagnostic, and the
+  README must say so.
+
 ---
 
 ## Rejected approaches
@@ -58,4 +85,4 @@ Working notes: what broke, what was tried, why X over Y.
 
 ## Open questions
 
-- [ ] Does the mirror match Zenodo for every scene (sizes, mask CRCs)? → `results/provenance.csv`
+- [x] Does the mirror match Zenodo? Yes: sizes, mask CRCs, sampled image CRCs, and one scene rebuilt chip-for-chip

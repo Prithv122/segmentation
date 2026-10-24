@@ -97,9 +97,14 @@ def _chips(records, root: Path, split: str):
 
 def cmd_baseline(args: argparse.Namespace) -> int:
     from segment.baseline import fit_constant, fit_index_threshold
+    from segment.chips import verify_chips
     from segment.predict import score_split
 
     records = _manifest_records(args.manifest)
+    problems = verify_chips(records, args.root)
+    if problems:
+        print(f"{len(problems)} chip(s) differ from the manifest, e.g. {problems[0]}; not scoring")
+        return 1
     ndwi = fit_index_threshold(_chips(records, args.root, "train"), index="ndwi")
     mndwi = fit_index_threshold(_chips(records, args.root, "train"), index="mndwi")
     const = fit_constant(mask for _, mask in _chips(records, args.root, "train"))

@@ -126,12 +126,23 @@ def test_macro_excludes_nan_chips(tmp_path):
     assert g["iou"] == pytest.approx(150 / 200)
 
 
-def test_paired_gap_point_and_pairing(tmp_path):
-    extra = [*UNET_TEST, ("test", "t9", "S5", 5, 5, 5)]
-    s = summarise(make_results(tmp_path, unet=UNET_VAL + extra))
-    gap = s["comparisons"]["gap_test"]
+def test_paired_gap_point(tmp_path):
+    gap = summarise(make_results(tmp_path))["comparisons"]["gap_test"]
     assert gap["n_chips"] == 8 and gap["n_scenes"] == 4
     assert gap["point"] == pytest.approx(340 / 480 - 230 / 540)
+
+
+def test_different_test_chip_sets_refuse_to_compare(tmp_path):
+    extra = [*UNET_TEST, ("test", "t9", "S5", 5, 5, 5)]
+    with pytest.raises(ValueError, match="different test chips"):
+        summarise(make_results(tmp_path, unet=UNET_VAL + extra))
+
+
+def test_duplicated_csv_is_rejected(tmp_path):
+    d = make_results(tmp_path)
+    write_csv(d / "per_chip_unet_test (1).csv", "unet", UNET_TEST)
+    with pytest.raises(ValueError, match="appears twice"):
+        summarise(d)
 
 
 def test_drops(tmp_path):

@@ -53,6 +53,12 @@ def _read_rows(results_dir: Path) -> list[dict]:
                         "counts": Counts(int(r["tp"]), int(r["fp"]), int(r["fn"]), int(r["tn"])),
                     }
                 )
+    seen: dict[tuple[str, str, str], str] = {}
+    for r in rows:
+        key = (r["method"], r["split"], r["chip_id"])
+        if key in seen:
+            raise ValueError(f"chip {key} appears twice in {results_dir} (a duplicated CSV?)")
+        seen[key] = r["scene"]
     return rows
 
 
@@ -202,6 +208,8 @@ def summarise(results_dir: Path, n_boot: int = N_BOOT) -> dict:
     }
     gap = None
     if UNET in test_counts and BASELINE in test_counts:
+        if set(test_counts[UNET]) != set(test_counts[BASELINE]):
+            raise ValueError(f"{UNET} and {BASELINE} scored different test chips")
         gap = _paired_gap(test_counts[UNET], test_counts[BASELINE], n_boot)
     comparisons = {
         "gap_test": gap,
