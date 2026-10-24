@@ -1,0 +1,4 @@
+{
+  "max_drop_iou": 0.15,
+  "min_gap_iou": 0.05
+}
