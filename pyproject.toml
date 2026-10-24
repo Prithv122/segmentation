@@ -1,0 +1,60 @@
+[project]
+name = "segmentation"
+version = "0.1.0"
+description = "Water segmentation on Sentinel-2: U-Net vs an NDWI-Otsu threshold on held-out scenes, with a leakage audit."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2",
+    "pillow>=11",
+]
+
+[project.optional-dependencies]
+# Training and inference. Kaggle uses its preinstalled CUDA torch; locally and in CI the CPU wheel.
+train = [
+    "segmentation-models-pytorch>=0.4",
+    "torch>=2.4",
+]
+# Chip extraction from the S1S2-Water scenes (remote zip members -> GeoTIFF -> chips).
+chips = [
+    "rasterio>=1.4",
+    "remotezip>=0.12",
+]
+
+[project.scripts]
+segment = "segment.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/segment"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q -m 'not slow'"
+markers = ["slow: trains a tiny model on CPU (run with -m slow)"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
