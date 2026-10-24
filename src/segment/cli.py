@@ -72,6 +72,21 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def cmd_provenance(args: argparse.Namespace) -> int:
+    from segment.chips import read_scenes
+    from segment.provenance import check, mismatches, write_report
+
+    scenes = read_scenes(args.scenes)
+    full_image = {s for s in args.full_image.split(",") if s}
+    rows = check(scenes, full_image)
+    line = write_report(rows, args.out)
+    bad = mismatches(rows)
+    for r in bad:
+        print(f"MISMATCH {r['scene']} {r['layer']}: size_ok={r['size_ok']} crc_ok={r['crc_ok']}")
+    print(f"{line} -> {args.out}")
+    return 1 if bad else 0
+
+
 def _chips(records, root: Path, split: str):
     from segment.data import load_chip
 
@@ -192,6 +207,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("verify", help="check every chip's content hash against the manifest")
     manifest_args(sp)
     sp.set_defaults(func=cmd_verify)
+
+    sp = sub.add_parser("provenance", help="check the chip source mirror against the Zenodo zip")
+    sp.add_argument("--scenes", type=Path, default=DATA / "scenes.csv")
+    sp.add_argument("--out", type=Path, default=RESULTS / "provenance.csv")
+    sp.add_argument("--full-image", default="", help="comma-separated scenes whose image to CRC")
+    sp.set_defaults(func=cmd_provenance)
 
     sp = sub.add_parser("baseline", help="fit index thresholds on train, score val/test")
     manifest_args(sp)
