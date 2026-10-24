@@ -70,6 +70,25 @@ Working notes: what broke, what was tried, why X over Y.
   high and H2's drop is biased towards "poor generalisation"; PREREG calls H2 diagnostic, and the
   README must say so.
 
+### 2026-10-25 — baseline results and what they mean for H1; local CI
+
+- **Baselines on test (pooled IoU, 95% scene CI):** NDWI-Otsu 0.960 [0.943, 0.972], MNDWI-Otsu
+  0.966 [0.939, 0.978], constant 0. Val is harder than test for NDWI-Otsu (0.889; drop -0.071).
+- **H1 is now arithmetically out of reach.** "Supported" needs the paired-gap CI lower bound
+  >= 0.05, but the baseline already sits at 0.96, so the gap cannot exceed about 0.04. The margin
+  was set before any number existed; it is not changed now (that would be fitting the rule to the
+  data). The verdict will be "not supported" or "inconclusive", and the write-up says plainly
+  that the pre-registered margin was unattainable on clear-sky surface water.
+- **Where the threshold fails** (pooled IoU hides it: macro IoU is 0.607): s025 (0.394, boreal
+  forest, little water), s047 (0.759, coastal wetland in Colombia: flooded vegetation and marsh
+  are labelled water, and NDWI sees vegetation), s023 and s035 (~0.78-0.80). These scenes and the
+  macro IoU are where a U-Net can add value; they are reported as exploratory, not as H1.
+- **Local CI replay** (the workflow's steps, in order) on a fresh clone of `d0b106c` with a fresh
+  install (`UV_NO_CACHE=1`): ruff clean, 165 passed, coverage 82%, slow CPU training test passed,
+  `segment audit` clean, `segment eval` regenerates `results/` byte-identically. Differences from
+  the hosted runner: Windows 11, `--basetemp` in scratch, `-p no:cacheprovider`. Hosted CI not
+  run (no GitHub repo yet).
+
 ---
 
 ## Rejected approaches
