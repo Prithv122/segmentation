@@ -56,5 +56,5 @@ def test_train_dict_matches_trainconfig_defaults():
 
 def test_repo_ref_is_a_placeholder_the_install_cell_rejects():
     sources = [_source(c) for c in _notebook()["cells"] if c["cell_type"] == "code"]
-    assert any('REPO_REF = "<fill in' in s for s in sources)
+    assert any('"<fill in: commit sha>"' in s and "REPO_REF" in s for s in sources)
     assert any('assert not REPO_REF.startswith("<")' in s for s in sources)

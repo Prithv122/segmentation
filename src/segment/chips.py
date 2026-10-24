@@ -1,9 +1,10 @@
 """S1S2-Water scenes -> fixed 512 px chips, deterministic, one scene at a time.
 
-Each scene's Sentinel-2 image, water mask and valid-pixel mask are pulled out of the Zenodo
-zip parts by HTTP range requests (no full-part download), cut into a non-overlapping grid,
-sampled with a seed derived from the scene number, written as chips, and the full-size
-GeoTIFFs are deleted. Nothing here needs a GPU.
+Chip selection depends on a scene's water and valid-pixel masks only. Image chips are read as
+512 px windows from the pinned mirror's Cloud-Optimised GeoTIFFs (default) or cut from the whole
+scene pulled out of the Zenodo zip parts by ranged requests (authoritative, about 10x slower).
+Both sources give the same chips; ``segment verify`` checks them by content hash. Nothing here
+needs a GPU.
 """
 
 from __future__ import annotations
@@ -13,8 +14,9 @@ import io
 import json
 import logging
 import shutil
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import astuple, dataclass, fields
 from pathlib import Path
 
@@ -30,6 +32,20 @@ SOURCE_URL = f"https://zenodo.org/records/{ZENODO_RECORD}"
 PART_URL = "https://zenodo.org/api/records/" + ZENODO_RECORD + "/files/part{part}.zip/content"
 N_PARTS = 6
 LICENCE = "CC-BY-4.0"
+
+#: Unzipped copy of the same v1.0.1 files (CC BY 4.0 permits redistribution), pinned to a revision.
+#: Its Cloud-Optimised GeoTIFFs have 512 px tiles aligned with the chip grid, so one chip is one
+#: ranged read. `segment provenance` checks it against the Zenodo zip.
+MIRROR_REVISION = "e0551de726bf2fdd12ba4b5c24b470f6bc42d824"
+MIRROR_URL = (
+    "https://huggingface.co/datasets/idomogalla/s1s2_water/resolve/" + MIRROR_REVISION + "/{rel}"
+)
+GDAL_HTTP_ENV = {
+    "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
+    "GDAL_HTTP_MAX_RETRY": "5",
+    "GDAL_HTTP_RETRY_DELAY": "2",
+}
 
 #: Source band order is blue, green, red, nir, swir1, swir2; chips keep the first five.
 SOURCE_BANDS = (1, 2, 3, 4, 5)  # rasterio is 1-based
@@ -117,41 +133,65 @@ def member_names(scene: Scene) -> dict[str, str]:
     }
 
 
-def _stream_member(url: str, info, dest: Path, chunk: int = 1 << 20) -> Path:
-    """Download one zip member with a single ranged GET and inflate it on the fly.
+def _open_range(url: str, start: int, end: int, timeout: float):
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _stream_member(
+    url: str,
+    info,
+    dest: Path,
+    chunk: int = 1 << 20,
+    retries: int = 8,
+    timeout: float = 120,
+) -> Path:
+    """Download one zip member with a streamed ranged GET and inflate it on the fly.
 
     ``remotezip.extract`` issues many small range requests and ran at under 0.5 MB/s against
-    Zenodo; one streamed request runs at the connection's full rate.
+    Zenodo; one streamed request runs at the connection's full rate. A stalled or dropped
+    connection resumes from the last compressed byte received; it gives up after ``retries``
+    failures in a row with no progress.
     """
     import struct
-    import urllib.request
     import zlib
 
+    if info.compress_type not in (0, 8):
+        raise OSError(f"{info.filename}: unsupported compression {info.compress_type}")
     start = info.header_offset
-    end = start + 30 + len(info.filename.encode()) + 1024 + info.compress_size
-    req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(req, timeout=120) as resp, dest.open("wb") as out:
+    with _open_range(url, start, start + 29, timeout) as resp:
         header = resp.read(30)
-        if header[:4] != b"PK\x03\x04":
-            raise OSError(f"{info.filename}: not a local file header")
-        name_len, extra_len = struct.unpack("<HH", header[26:30])
-        resp.read(name_len + extra_len)
-        if info.compress_type == 8:
-            inflater = zlib.decompressobj(-15)
-        elif info.compress_type != 0:
-            raise OSError(f"{info.filename}: unsupported compression {info.compress_type}")
-        remaining = info.compress_size
-        crc = 0
-        while remaining:
-            block = resp.read(min(chunk, remaining))
-            if not block:
-                raise OSError(f"{info.filename}: connection closed early")
-            remaining -= len(block)
-            data = inflater.decompress(block) if info.compress_type == 8 else block
-            crc = zlib.crc32(data, crc)
-            out.write(data)
-        if info.compress_type == 8:
+    if header[:4] != b"PK\x03\x04":
+        raise OSError(f"{info.filename}: not a local file header")
+    name_len, extra_len = struct.unpack("<HH", header[26:30])
+    data_start = start + 30 + name_len + extra_len
+    data_end = data_start + info.compress_size - 1
+
+    inflater = zlib.decompressobj(-15) if info.compress_type == 8 else None
+    received, crc, failures, received_at_failure = 0, 0, 0, -1
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("wb") as out:
+        while received < info.compress_size:
+            try:
+                with _open_range(url, data_start + received, data_end, timeout) as resp:
+                    while received < info.compress_size:
+                        block = resp.read(min(chunk, info.compress_size - received))
+                        if not block:
+                            raise OSError("connection closed early")
+                        received += len(block)
+                        data = inflater.decompress(block) if inflater else block
+                        crc = zlib.crc32(data, crc)
+                        out.write(data)
+            except (OSError, TimeoutError) as exc:
+                # Only consecutive failures without progress count towards the limit.
+                failures = 1 if received > received_at_failure else failures + 1
+                received_at_failure = received
+                if failures > retries:
+                    raise OSError(f"{info.filename}: gave up after {retries} retries") from exc
+                log.warning("%s: %s at %d bytes, resuming", info.filename, exc, received)
+        if inflater:
             tail = inflater.flush()
             crc = zlib.crc32(tail, crc)
             out.write(tail)
@@ -173,19 +213,75 @@ def fetch_scene(scene: Scene, tmp_dir: Path) -> dict[str, Path]:
     }
 
 
+def read_mask(msk_path: Path, valid_path: Path) -> np.ndarray:
+    """uint8 (H,W): water 1, land 0, IGNORE where the valid-pixel mask is 0."""
+    import rasterio
+
+    with rasterio.open(msk_path) as src:
+        water = src.read(1)
+    with rasterio.open(valid_path) as src:
+        valid = src.read(1)
+    mask = (water == 1).astype(np.uint8)
+    mask[valid == 0] = IGNORE
+    return mask
+
+
 def read_scene(paths: dict[str, Path]) -> tuple[np.ndarray, np.ndarray]:
-    """(image uint16 (5,H,W), mask uint8 (H,W)); invalid or all-zero pixels become IGNORE."""
+    """(image uint16 (5,H,W), mask uint8 (H,W)) from local GeoTIFFs.
+
+    The all-zero (nodata) rule is applied per chip in :func:`cut_scene`, so chip selection
+    depends on the masks only and both sources select the same chips.
+    """
     import rasterio
 
     with rasterio.open(paths["img"]) as src:
         image = src.read(list(SOURCE_BANDS)).astype(np.uint16, copy=False)
-    with rasterio.open(paths["msk"]) as src:
-        water = src.read(1)
-    with rasterio.open(paths["valid"]) as src:
-        valid = src.read(1)
-    mask = (water == 1).astype(np.uint8)
-    mask[(valid == 0) | (image == 0).all(axis=0)] = IGNORE
-    return image, mask
+    return image, read_mask(paths["msk"], paths["valid"])
+
+
+ChipReader = Callable[[int, int, int], np.ndarray]
+
+
+@contextmanager
+def open_scene_zenodo(scene: Scene, tmp_dir: Path) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Whole scene from the Zenodo zip (authoritative, ~1.7 GB per scene, slow)."""
+    yield read_scene(fetch_scene(scene, tmp_dir))
+
+
+def _download(url: str, dest: Path) -> Path:
+    import urllib.request
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(url, timeout=120) as resp, dest.open("wb") as out:
+        shutil.copyfileobj(resp, out, 1 << 20)
+    return dest
+
+
+@contextmanager
+def open_scene_mirror(scene: Scene, tmp_dir: Path) -> Iterator[tuple[ChipReader, np.ndarray]]:
+    """Masks downloaded whole (about 2 MB); image chips read as windows over HTTP."""
+    import rasterio
+    from rasterio.windows import Window
+
+    names = member_names(scene)
+    msk = _download(MIRROR_URL.format(rel=names["msk"]), tmp_dir / "msk.tif")
+    valid = _download(MIRROR_URL.format(rel=names["valid"]), tmp_dir / "valid.tif")
+    mask = read_mask(msk, valid)
+    with (
+        rasterio.Env(**GDAL_HTTP_ENV),
+        rasterio.open("/vsicurl/" + MIRROR_URL.format(rel=names["img"])) as src,
+    ):
+        if src.shape != mask.shape:
+            raise OSError(f"{scene.scene}: image {src.shape} != mask {mask.shape}")
+
+        def read(row: int, col: int, size: int) -> np.ndarray:
+            window = Window(col, row, size, size)
+            return src.read(list(SOURCE_BANDS), window=window).astype(np.uint16, copy=False)
+
+        yield read, mask
+
+
+SceneOpener = Callable[[Scene, Path], AbstractContextManager]
 
 
 @dataclass(frozen=True)
@@ -240,23 +336,34 @@ def chip_id(scene: Scene, cand: Candidate) -> str:
 
 def cut_scene(
     scene: Scene,
-    image: np.ndarray,
+    image: np.ndarray | ChipReader,
     mask: np.ndarray,
     out_root: Path,
     chip: int = CHIP,
     k: int | None = None,
     seed: int = SEED,
 ) -> list[ChipRecord]:
-    """Select and write this scene's chips under ``out_root/chips/<scene>/``."""
+    """Select and write this scene's chips under ``out_root/chips/<scene>/``.
+
+    ``image`` is the whole scene or a ``read(row, col, size)`` window reader. Pixels where every
+    band is 0 (nodata) become IGNORE; the record's fractions describe the saved mask.
+    """
     k = CHIPS_PER_SCENE[scene.split] if k is None else k
     picked = select_chips(candidate_grid(mask, chip), scene.split, k, seed=seed + scene.number)
     records = []
     for cand in picked:
         cid = chip_id(scene, cand)
         rel = f"chips/{scene.scene}/{cid}.npz"
-        img = np.ascontiguousarray(image[:, cand.row : cand.row + chip, cand.col : cand.col + chip])
-        msk = np.ascontiguousarray(mask[cand.row : cand.row + chip, cand.col : cand.col + chip])
+        if callable(image):
+            img = np.ascontiguousarray(image(cand.row, cand.col, chip))
+        else:
+            img = np.ascontiguousarray(
+                image[:, cand.row : cand.row + chip, cand.col : cand.col + chip]
+            )
+        msk = mask[cand.row : cand.row + chip, cand.col : cand.col + chip].copy()
+        msk[(img == 0).all(axis=0)] = IGNORE
         sha = save_chip(out_root / rel, img, msk)
+        n_valid = int((msk != IGNORE).sum())
         records.append(
             ChipRecord(
                 chip_id=cid,
@@ -265,8 +372,8 @@ def cut_scene(
                 split=scene.split,
                 row=cand.row,
                 col=cand.col,
-                valid_frac=cand.valid_frac,
-                water_frac=cand.water_frac,
+                valid_frac=n_valid / msk.size,
+                water_frac=int((msk == 1).sum()) / n_valid if n_valid else 0.0,
                 image_path_rel=rel,
                 licence=LICENCE,
                 source_url=SOURCE_URL,
@@ -279,18 +386,17 @@ def cut_scene(
 def build_scene(
     scene: Scene,
     out_root: Path,
-    fetch: Callable[[Scene, Path], dict[str, Path]] = fetch_scene,
-    read: Callable[[dict[str, Path]], tuple[np.ndarray, np.ndarray]] = read_scene,
+    opener: SceneOpener = open_scene_mirror,
     **cut_kwargs,
 ) -> Path:
-    """Fetch, cut and clean up one scene; resumable via ``out_root/records/<scene>.csv``."""
+    """Open, cut and clean up one scene; resumable via ``out_root/records/<scene>.csv``."""
     done = out_root / "records" / f"{scene.scene}.csv"
     if done.exists():
         return done
     tmp = out_root / "tmp" / scene.scene
     try:
-        image, mask = read(fetch(scene, tmp))
-        records = cut_scene(scene, image, mask, out_root, **cut_kwargs)
+        with opener(scene, tmp) as (image, mask):
+            records = cut_scene(scene, image, mask, out_root, **cut_kwargs)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     done.parent.mkdir(parents=True, exist_ok=True)

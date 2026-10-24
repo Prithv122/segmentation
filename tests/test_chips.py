@@ -7,6 +7,7 @@ import threading
 import zipfile
 from collections import Counter
 from collections.abc import Iterator
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from segment.bands import IGNORE
 from segment.chips import (
     LICENCE,
     MIN_VALID_FRAC,
+    MIRROR_REVISION,
+    MIRROR_URL,
     WATER_CHIP_FRAC,
     Candidate,
     Scene,
@@ -27,6 +30,7 @@ from segment.chips import (
     candidate_grid,
     chip_id,
     cut_scene,
+    read_mask,
     read_scene,
     read_scenes,
     scene_from_meta,
@@ -223,6 +227,75 @@ def test_cut_scene_is_deterministic(tmp_path):
     assert a == b
 
 
+def _nodata_scene() -> tuple[np.ndarray, np.ndarray]:
+    """16x16 scene; chip (0, 0) has a 4x8 nodata block, 2 mask-IGNORE pixels and 16 valid water."""
+    image, _ = make_arrays(16)
+    mask = np.zeros((16, 16), dtype=np.uint8)
+    mask[0:2, 0:8] = 1  # water inside the nodata block: becomes IGNORE
+    mask[4:6, 0:8] = 1  # 16 water pixels that stay valid
+    mask[7, 0:2] = IGNORE  # ignored by the source valid mask
+    mask[8:, 8:] = 1
+    image[:, 0:4, 0:8] = 0
+    image[0, 6, 6] = 0  # one zero band only: still valid
+    return image, mask
+
+
+def test_cut_scene_all_zero_pixels_become_ignore_and_fractions_follow(tmp_path):
+    image, mask = _nodata_scene()
+    records = cut_scene(make_scene(), image, mask, tmp_path, chip=8, k=4)
+    first = next(r for r in records if (r.row, r.col) == (0, 0))
+    _, saved = load_chip(tmp_path / first.image_path_rel)
+    assert (saved[0:4, 0:8] == IGNORE).all()  # nodata, even where the source mask said water
+    assert (saved[7, 0:2] == IGNORE).all()
+    assert (saved == IGNORE).sum() == 32 + 2
+    assert saved[6, 6] == 0  # a single zero band does not make a pixel nodata
+    # 64 - 32 - 2 = 30 valid pixels, 16 of them water
+    assert first.valid_frac == pytest.approx(30 / 64)
+    assert first.water_frac == pytest.approx(16 / 30)
+    for rec in records:
+        _, m = load_chip(tmp_path / rec.image_path_rel)
+        n_valid = int((m != IGNORE).sum())
+        assert rec.valid_frac == pytest.approx(n_valid / m.size)
+        assert rec.water_frac == pytest.approx((m == 1).sum() / n_valid)
+    other = next(r for r in records if (r.row, r.col) == (8, 8))
+    assert other.valid_frac == 1.0 and other.water_frac == 1.0
+
+
+def test_cut_scene_selects_on_mask_only_and_survives_fully_empty_chip(tmp_path):
+    image, mask = make_arrays(16)
+    image[:, 8:, 8:] = 0  # nodata everywhere in chip (8, 8), but the mask calls it valid
+    records = cut_scene(make_scene(), image, mask, tmp_path, chip=8, k=4)
+    assert len(records) == 4  # nodata does not affect eligibility
+    empty = next(r for r in records if (r.row, r.col) == (8, 8))
+    assert empty.valid_frac == 0.0 and empty.water_frac == 0.0
+    _, saved = load_chip(tmp_path / empty.image_path_rel)
+    assert (saved == IGNORE).all()
+
+
+@pytest.mark.parametrize("split", ["train", "val"])
+def test_cut_scene_whole_array_and_window_reader_agree(tmp_path, split):
+    image, mask = _nodata_scene()
+    scene = make_scene(split=split)
+    whole = cut_scene(scene, image, mask, tmp_path / "whole", chip=8, k=3)
+    calls: list[tuple[int, int, int]] = []
+    windows = cut_scene(scene, window_reader(image, calls), mask, tmp_path / "win", chip=8, k=3)
+    assert whole == windows
+    assert sorted((r, c) for r, c, _ in calls) == sorted((r.row, r.col) for r in whole)
+    for rec in whole:
+        a_img, a_msk = load_chip(tmp_path / "whole" / rec.image_path_rel)
+        b_img, b_msk = load_chip(tmp_path / "win" / rec.image_path_rel)
+        assert a_img.dtype == b_img.dtype and np.array_equal(a_img, b_img)
+        assert np.array_equal(a_msk, b_msk)
+    assert verify_chips(windows, tmp_path / "win") == []
+
+
+def test_cut_scene_does_not_modify_inputs(tmp_path):
+    image, mask = _nodata_scene()
+    image0, mask0 = image.copy(), mask.copy()
+    cut_scene(make_scene(), image, mask, tmp_path, chip=8, k=4)
+    assert np.array_equal(image, image0) and np.array_equal(mask, mask0)
+
+
 def test_chip_id_format():
     assert chip_id(make_scene(3), Candidate(512, 1024, 1.0, 0.0)) == "s003_r00512_c01024"
 
@@ -230,30 +303,41 @@ def test_chip_id_format():
 # ---------------------------------------------------------------- build_scene / build_all
 
 
+def window_reader(image: np.ndarray, calls: list | None = None):
+    """A ``read(row, col, size)`` over a whole array, as the mirror opener provides."""
+
+    def read(row: int, col: int, size: int) -> np.ndarray:
+        if calls is not None:
+            calls.append((row, col, size))
+        return image[:, row : row + size, col : col + size]
+
+    return read
+
+
 class Fakes:
-    """Injected fetch/read that touch no network and record how often they were called."""
+    """Injected opener that touches no network and records how often it was entered."""
 
-    def __init__(self, fail_read: bool = False):
-        self.fetched: list[str] = []
-        self.fail_read = fail_read
+    def __init__(self, fail_open: bool = False, use_reader: bool = False):
+        self.opened: list[str] = []
+        self.fail_open = fail_open
+        self.use_reader = use_reader
+        self.reads: list[tuple[int, int, int]] = []
 
-    def fetch(self, scene: Scene, tmp_dir: Path) -> dict[str, Path]:
-        self.fetched.append(scene.scene)
+    @contextmanager
+    def opener(self, scene: Scene, tmp_dir: Path):
+        self.opened.append(scene.scene)
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        path = tmp_dir / "img.tif"
-        path.write_bytes(b"x")
-        return {"img": path}
-
-    def read(self, paths: dict[str, Path]) -> tuple[np.ndarray, np.ndarray]:
-        if self.fail_read:
+        (tmp_dir / "msk.tif").write_bytes(b"x")
+        if self.fail_open:
             raise RuntimeError("boom")
-        return make_arrays(16)
+        image, mask = make_arrays(16)
+        yield (window_reader(image, self.reads) if self.use_reader else image), mask
 
 
 def test_build_scene_writes_records_and_cleans_tmp(tmp_path):
     fakes = Fakes()
     scene = make_scene(12)
-    done = build_scene(scene, tmp_path, fetch=fakes.fetch, read=fakes.read, chip=8, k=2)
+    done = build_scene(scene, tmp_path, opener=fakes.opener, chip=8, k=2)
     assert done == tmp_path / "records" / "s012.csv"
     records = read_manifest(done)
     assert len(records) == 2 and all(r.scene == "s012" for r in records)
@@ -261,11 +345,28 @@ def test_build_scene_writes_records_and_cleans_tmp(tmp_path):
     assert all((tmp_path / r.image_path_rel).exists() for r in records)
 
 
-def test_build_scene_removes_tmp_when_read_raises(tmp_path):
-    fakes = Fakes(fail_read=True)
+def test_build_scene_with_window_reader_reads_only_chosen_windows(tmp_path):
+    fakes = Fakes(use_reader=True)
+    done = build_scene(make_scene(12), tmp_path, opener=fakes.opener, chip=8, k=2)
+    records = read_manifest(done)
+    assert sorted((r.row, r.col) for r in records) == sorted((r, c) for r, c, _ in fakes.reads)
+    assert {size for _, _, size in fakes.reads} == {8}
+    assert verify_chips(records, tmp_path) == []
+
+
+def test_build_scene_removes_tmp_when_opener_raises(tmp_path):
+    fakes = Fakes(fail_open=True)
     with pytest.raises(RuntimeError, match="boom"):
-        build_scene(make_scene(12), tmp_path, fetch=fakes.fetch, read=fakes.read, chip=8, k=2)
-    assert fakes.fetched == ["s012"]
+        build_scene(make_scene(12), tmp_path, opener=fakes.opener, chip=8, k=2)
+    assert fakes.opened == ["s012"]
+    assert not (tmp_path / "tmp" / "s012").exists()
+    assert not (tmp_path / "records" / "s012.csv").exists()
+
+
+def test_build_scene_removes_tmp_when_cutting_raises(tmp_path):
+    fakes = Fakes()
+    with pytest.raises(KeyError):  # unknown split and no explicit k
+        build_scene(make_scene(12, split="bogus"), tmp_path, opener=fakes.opener, chip=8)
     assert not (tmp_path / "tmp" / "s012").exists()
     assert not (tmp_path / "records" / "s012.csv").exists()
 
@@ -273,11 +374,11 @@ def test_build_scene_removes_tmp_when_read_raises(tmp_path):
 def test_build_scene_is_resumable(tmp_path):
     fakes = Fakes()
     scene = make_scene(12)
-    first = build_scene(scene, tmp_path, fetch=fakes.fetch, read=fakes.read, chip=8, k=2)
+    first = build_scene(scene, tmp_path, opener=fakes.opener, chip=8, k=2)
     before = first.read_bytes()
-    second = build_scene(scene, tmp_path, fetch=fakes.fetch, read=fakes.read, chip=8, k=2)
+    second = build_scene(scene, tmp_path, opener=fakes.opener, chip=8, k=2)
     assert second == first and first.read_bytes() == before
-    assert fakes.fetched == ["s012"]
+    assert fakes.opened == ["s012"]
 
 
 def test_build_all_writes_sorted_combined_manifest(tmp_path):
@@ -286,10 +387,10 @@ def test_build_all_writes_sorted_combined_manifest(tmp_path):
         make_scene(1, "train", "T01AAA"),
         make_scene(2, "val", "T02BBB"),
     ]
-    fakes = Fakes()
-    paths = build_all(scenes, tmp_path, workers=2, fetch=fakes.fetch, read=fakes.read, chip=8, k=2)
+    fakes = Fakes(use_reader=True)
+    paths = build_all(scenes, tmp_path, workers=2, opener=fakes.opener, chip=8, k=2)
     assert len(paths) == 3
-    assert sorted(fakes.fetched) == ["s001", "s002", "s003"]
+    assert sorted(fakes.opened) == ["s001", "s002", "s003"]
     records = read_manifest(tmp_path / "manifest.csv")
     assert len(records) == 6
     ids = [r.chip_id for r in records]
@@ -299,10 +400,16 @@ def test_build_all_writes_sorted_combined_manifest(tmp_path):
 
 
 def test_build_all_reraises_failures(tmp_path):
-    fakes = Fakes(fail_read=True)
+    fakes = Fakes(fail_open=True)
     with pytest.raises(RuntimeError, match="boom"):
-        build_all([make_scene(1)], tmp_path, workers=1, fetch=fakes.fetch, read=fakes.read)
+        build_all([make_scene(1)], tmp_path, workers=1, opener=fakes.opener)
     assert not (tmp_path / "manifest.csv").exists()
+
+
+def test_mirror_url_is_pinned_to_a_revision():
+    assert re.fullmatch(r"[0-9a-f]{40}", MIRROR_REVISION)
+    url = MIRROR_URL.format(rel="71/sentinel12_s2_71_img.tif")
+    assert url.endswith(f"/resolve/{MIRROR_REVISION}/71/sentinel12_s2_71_img.tif")
 
 
 # ---------------------------------------------------------------- read_scene
@@ -324,15 +431,13 @@ def _write_tif(path: Path, data: np.ndarray) -> None:
         dst.write(data)
 
 
-@pytest.mark.filterwarnings("ignore::rasterio.errors.NotGeoreferencedWarning")
-def test_read_scene_masks_invalid_and_empty_pixels(tmp_path):
-    pytest.importorskip("rasterio")
+def _write_scene_tifs(tmp_path: Path) -> dict[str, Path]:
     h = w = 4
     img = np.empty((6, h, w), dtype=np.uint16)
     for b in range(6):
         img[b] = 100 * (b + 1) + 1  # band b+1 holds 100*(b+1)+1 everywhere
-    img[:, 0, 0] = 0  # all six bands zero -> IGNORE
-    img[:5, 0, 2] = 0  # bands 1..5 zero but band 6 not: only bands 1..5 are kept -> IGNORE
+    img[:, 0, 0] = 0  # all-zero pixel: read_scene keeps it, cut_scene turns it into IGNORE
+    img[:5, 0, 2] = 0
     msk = np.zeros((h, w), dtype=np.uint8)
     msk[1, 0] = 1  # valid water
     msk[0, 1] = 1  # water, but marked invalid below
@@ -344,18 +449,33 @@ def test_read_scene_masks_invalid_and_empty_pixels(tmp_path):
     _write_tif(paths["img"], img)
     _write_tif(paths["msk"], msk)
     _write_tif(paths["valid"], valid)
+    return paths
 
-    image, mask = read_scene(paths)
-    assert image.shape == (5, h, w) and image.dtype == np.uint16
-    assert mask.shape == (h, w) and mask.dtype == np.uint8
-    assert mask[0, 0] == IGNORE and mask[0, 2] == IGNORE
-    assert mask[0, 1] == IGNORE and mask[3, 3] == IGNORE
+
+@pytest.mark.filterwarnings("ignore::rasterio.errors.NotGeoreferencedWarning")
+def test_read_mask_water_land_and_invalid(tmp_path):
+    pytest.importorskip("rasterio")
+    paths = _write_scene_tifs(tmp_path)
+    mask = read_mask(paths["msk"], paths["valid"])
+    assert mask.shape == (4, 4) and mask.dtype == np.uint8
     assert mask[1, 0] == 1
-    assert mask[1, 1] == 0 and mask[2, 2] == 0
-    assert (mask == IGNORE).sum() == 4
+    assert mask[0, 1] == IGNORE and mask[3, 3] == IGNORE  # valid == 0 wins over water
+    assert mask[1, 1] == 0 and mask[2, 2] == 0  # code 2 is not water
+    assert (mask == IGNORE).sum() == 2
+
+
+@pytest.mark.filterwarnings("ignore::rasterio.errors.NotGeoreferencedWarning")
+def test_read_scene_keeps_bands_one_to_five_and_leaves_nodata_to_cut_scene(tmp_path):
+    pytest.importorskip("rasterio")
+    paths = _write_scene_tifs(tmp_path)
+    image, mask = read_scene(paths)
+    assert image.shape == (5, 4, 4) and image.dtype == np.uint16
     for b in range(5):
         assert image[b, 2, 2] == 100 * (b + 1) + 1  # bands 1..5 in source order
-    assert 601 not in np.unique(image)
+    assert 601 not in np.unique(image)  # band 6 dropped
+    assert (image[:, 0, 0] == 0).all()  # nodata pixel is kept as read ...
+    assert mask[0, 0] == 0 and mask[0, 2] == 0  # ... and is not IGNORE here
+    assert np.array_equal(mask, read_mask(paths["msk"], paths["valid"]))
 
 
 # ---------------------------------------------------------------- scenes
@@ -421,6 +541,9 @@ def test_committed_scenes_csv():
 
 class RangeHandler(BaseHTTPRequestHandler):
     root: Path
+    #: ``mode`` "once" or "always" drops the connection after ``drop_after`` body bytes of a
+    #: data request (a range longer than the 30-byte local header); ``drops`` counts them.
+    flaky: dict
 
     def do_GET(self):
         data = (self.root / self.path.lstrip("/")).read_bytes()
@@ -436,6 +559,18 @@ class RangeHandler(BaseHTTPRequestHandler):
                 body = data[start : end + 1]
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            flaky = self.flaky
+            drop = (
+                len(body) > 100
+                and len(body) > flaky["drop_after"]
+                and (flaky["mode"] == "always" or (flaky["mode"] == "once" and not flaky["drops"]))
+            )
+            if drop:
+                flaky["drops"] += 1
+                self.wfile.write(body[: flaky["drop_after"]])
+                self.wfile.flush()
+                self.close_connection = True
+                return
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -445,9 +580,14 @@ class RangeHandler(BaseHTTPRequestHandler):
 
 
 @pytest.fixture
-def zip_server(tmp_path, monkeypatch) -> Iterator[tuple[str, Path]]:
+def flaky() -> dict:
+    return {"mode": None, "drop_after": 0, "drops": 0}
+
+
+@pytest.fixture
+def zip_server(tmp_path, monkeypatch, flaky) -> Iterator[tuple[str, Path]]:
     monkeypatch.setenv("no_proxy", "127.0.0.1")
-    handler = type("Handler", (RangeHandler,), {"root": tmp_path})
+    handler = type("Handler", (RangeHandler,), {"root": tmp_path, "flaky": flaky})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(
         target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
@@ -463,6 +603,7 @@ def zip_server(tmp_path, monkeypatch) -> Iterator[tuple[str, Path]]:
 PAYLOADS = {
     "a/deflated.bin": (zipfile.ZIP_DEFLATED, b"water" * 40000 + bytes(range(256)) * 50),
     "b/stored.bin": (zipfile.ZIP_STORED, np.random.default_rng(0).bytes(50000)),
+    "c/deflated_noisy.bin": (zipfile.ZIP_DEFLATED, np.random.default_rng(1).bytes(30000)),
 }
 
 
@@ -481,6 +622,42 @@ def test_stream_member_round_trip(zip_server, tmp_path, name):
     assert info.compress_type == PAYLOADS[name][0]
     out = _stream_member(url, info, tmp_path / "out" / "x.bin", chunk=4096)
     assert out.read_bytes() == PAYLOADS[name][1]
+
+
+@pytest.mark.parametrize("name", ["b/stored.bin", "c/deflated_noisy.bin"])
+def test_stream_member_resumes_after_dropped_connection(zip_server, tmp_path, flaky, name):
+    url, zip_path = zip_server
+    _build_zip(zip_path)
+    with zipfile.ZipFile(zip_path) as z:
+        info = z.getinfo(name)
+    assert info.compress_size > 5000
+    flaky.update(mode="once", drop_after=3000)
+    out = _stream_member(url, info, tmp_path / "out" / "x.bin", chunk=1000, retries=2, timeout=5)
+    assert flaky["drops"] == 1
+    assert out.read_bytes() == PAYLOADS[name][1]
+
+
+def test_stream_member_gives_up_when_connection_drops_without_progress(zip_server, tmp_path, flaky):
+    url, zip_path = zip_server
+    _build_zip(zip_path)
+    with zipfile.ZipFile(zip_path) as z:
+        info = z.getinfo("b/stored.bin")
+    flaky.update(mode="always", drop_after=0)
+    with pytest.raises(OSError, match="gave up"):
+        _stream_member(url, info, tmp_path / "out" / "x.bin", chunk=500, retries=2, timeout=2)
+    assert flaky["drops"] == 3  # the first try plus two retries, none of them making progress
+
+
+def test_stream_member_keeps_resuming_while_each_try_makes_progress(zip_server, tmp_path, flaky):
+    url, zip_path = zip_server
+    _build_zip(zip_path)
+    with zipfile.ZipFile(zip_path) as z:
+        info = z.getinfo("b/stored.bin")
+        expected = z.read("b/stored.bin")
+    flaky.update(mode="always", drop_after=1000)
+    out = _stream_member(url, info, tmp_path / "out" / "x.bin", chunk=500, retries=2, timeout=2)
+    assert out.read_bytes() == expected
+    assert flaky["drops"] > 2  # more drops than retries, yet it finished
 
 
 def test_stream_member_detects_crc_mismatch(zip_server, tmp_path):
