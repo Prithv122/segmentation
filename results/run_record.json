@@ -1,0 +1,122 @@
+{
+  "config": {
+    "chips_dir": "/tmp/data",
+    "manifest": "/tmp/segmentation/data/manifest.csv",
+    "out_dir": "/kaggle/working/run",
+    "encoder": "resnet34",
+    "encoder_weights": "imagenet",
+    "epochs": 40,
+    "batch_size": 16,
+    "lr": 0.0003,
+    "weight_decay": 0.0001,
+    "crop": 256,
+    "num_workers": 4,
+    "seed": 0,
+    "device": "cuda",
+    "patience": 8,
+    "extra": {}
+  },
+  "versions": {
+    "torch": "2.11.0+cu128",
+    "segmentation_models_pytorch": "0.5.0",
+    "numpy": "2.1.3"
+  },
+  "device": "cuda",
+  "git_commit": "3e7dd8fb6665dd21e26953b43a1e9af5ba20a7da",
+  "epochs": [
+    {
+      "epoch": 1,
+      "train_loss": 0.8267306428064,
+      "val_iou": 0.8664304540123106,
+      "lr": 0.0003,
+      "seconds": 27.746662518999983
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.36307364278896287,
+      "val_iou": 0.907860452853368,
+      "lr": 0.00029953760005996916,
+      "seconds": 24.78644129600002
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.22305494281604435,
+      "val_iou": 0.9267675143441548,
+      "lr": 0.00029815325108927063,
+      "seconds": 24.986584613999867
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.1461698246386015,
+      "val_iou": 0.9407682574200632,
+      "lr": 0.0002958554880596515,
+      "seconds": 25.197980804000053
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.1574996438611186,
+      "val_iou": 0.9198301473148665,
+      "lr": 0.00029265847744427303,
+      "seconds": 25.087659736000205
+    },
+    {
+      "epoch": 6,
+      "train_loss": 0.07960458569031095,
+      "val_iou": 0.9370227505260738,
+      "lr": 0.000288581929876693,
+      "seconds": 25.432204017999993
+    },
+    {
+      "epoch": 7,
+      "train_loss": 0.0767815098110022,
+      "val_iou": 0.9221570452692289,
+      "lr": 0.0002836509786282552,
+      "seconds": 25.124173215999917
+    },
+    {
+      "epoch": 8,
+      "train_loss": 0.07492002389732409,
+      "val_iou": 0.8992369343457768,
+      "lr": 0.00027789602465311383,
+      "seconds": 25.498445403999995
+    },
+    {
+      "epoch": 9,
+      "train_loss": 0.06558332726302923,
+      "val_iou": 0.912560207262805,
+      "lr": 0.0002713525491562421,
+      "seconds": 25.269788629000004
+    },
+    {
+      "epoch": 10,
+      "train_loss": 0.12407503841501294,
+      "val_iou": 0.8977774138784659,
+      "lr": 0.00026406089484000466,
+      "seconds": 25.848781340000187
+    },
+    {
+      "epoch": 11,
+      "train_loss": 0.09845900659759839,
+      "val_iou": 0.9256753551806957,
+      "lr": 0.0002560660171779821,
+      "seconds": 25.604242595000187
+    },
+    {
+      "epoch": 12,
+      "train_loss": 0.07210824810053137,
+      "val_iou": 0.8947565874416747,
+      "lr": 0.0002474172072495276,
+      "seconds": 25.536877685000036
+    }
+  ],
+  "best_epoch": 4,
+  "best_val_iou": 0.9407682574200632,
+  "n_train": 2112,
+  "n_val": 512,
+  "notebook": {
+    "repo_url": "https://github.com/Prithv122/segmentation.git",
+    "repo_commit": "3e7dd8fb6665dd21e26953b43a1e9af5ba20a7da",
+    "chips_verified": 3136,
+    "chip_root": "/tmp/data"
+  }
+}
