@@ -15,14 +15,15 @@ Form: **action → technical specifics → measured outcome.** Numbers or it doe
   content hashes verified on a second machine (Kaggle) and against the authoritative Zenodo zip
   (195/195 file sizes, 130/130 label CRCs, one scene rebuilt chip-for-chip), and a leakage audit
   by scene and MGRS tile.
-- Traced the two methods' failure modes from per-scene results and overlays: on the four scenes
-  where the threshold was weakest the U-Net scored 0.882 vs 0.783 IoU by rejecting terrain
-  shadow, but it missed rivers a few pixels wide and turbid coastal shallows (recall 0.953 vs
-  0.980); exploratory, scene set fixed before training.
+- Traced where each method fails from per-scene results and overlays: on the four scenes where
+  the threshold was weakest the U-Net scored 0.882 vs 0.783 IoU (clear wins on two, one where
+  NDWI marks mountain shadow as water; a tie and a loss on the others), while overall it trades
+  recall for precision (0.953 / 0.992 vs 0.980 / 0.979) and under-segments narrow rivers and
+  turbid coastal shallows; exploratory, scene set fixed before training.
 
 **Shorter form, one line:** Pre-registered U-Net vs NDWI-Otsu water segmentation on 16 held-out
 Sentinel-2 scenes: the threshold won on pooled IoU (0.960 vs 0.946, scene-bootstrap CI of the gap
-[−0.039, +0.012]); the U-Net fixed shadow false alarms but missed thin rivers.
+[−0.039, +0.012]); the U-Net was more precise but missed narrow rivers and turbid shallows.
 
 ## Which roles this supports
 
@@ -47,7 +48,8 @@ scene-clustered paired bootstrap · Kaggle GPU · GitHub Actions
 
 - **0.946 / 0.960** are pooled test IoU over 512 chips in 16 scenes. Don't say the U-Net "reached
   95% accuracy": IoU is not accuracy, and the baseline was higher.
-- **0.882 vs 0.783** is exploratory (4 scenes, no interval). Say "on the four hardest scenes", and
-  say that the set was fixed before training.
+- **0.882 vs 0.783** is exploratory (4 scenes, no interval). Say "on the four scenes where the
+  threshold did worst", say that the set was fixed before training, and say that choosing by the
+  baseline's failures flatters the challenger. Shadow is documented for one scene (s035) only.
 - The val IoU in `run_record.json` (0.9408) is the fp16 number from training; quote 0.941 from
   `results/summary.md` (fp32), which matches it to three decimals.

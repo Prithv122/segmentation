@@ -24,7 +24,7 @@ baselines and evaluation run on CPU.
 - [x] `results/summary.md` built from committed per-chip CSVs; H1/H2 verdicts by the frozen rules
 - [x] Overlays of best and worst test scenes per method; failure modes written up (overlays stay
   local: they contain dataset imagery)
-- [ ] Runs from a clean clone using only the documented steps
+- [x] Runs from a clean clone using only the documented steps
 - [ ] Tests, lint and CI green; README results come from real runs
 
 ## Conventions
@@ -32,13 +32,15 @@ baselines and evaluation run on CPU.
 - `uv` for dependencies; `ruff check` + `ruff format`; `pytest` (`-m slow` trains a tiny CPU model).
 - No secrets in the repo. The only env var is the optional `SEGMENT_GIT_COMMIT`, which the Kaggle
   notebook sets so `run_record.json` names the commit it trained.
-- No chip, image or mask from the dataset is committed. Chips are rebuilt from Zenodo and checked
-  by content hash (`segment verify`).
+- No chip, image or mask from the dataset is committed. Chips are rebuilt (from the pinned mirror,
+  or the Zenodo zips) and checked by content hash (`segment verify`).
 
 ## Project-specific notes
 
 - `data/manifest.csv` is the source of truth for chip membership and split; never hand-edit it.
 - The test split is scored once per method. Anything changed after seeing a test number is an
   amendment in `PREREG.md`, reported next to the original.
-- Zenodo serves about 6 MB/s per connection; a scene's Sentinel-2 image is ~1.7 GB compressed.
-  `segment chips` streams one member per request (the remotezip default is ~10× slower).
+- Zenodo sustained about 0.5 MB/s per connection (a 6 MB/s first burst); a scene's Sentinel-2
+  image is about 1.8 GB. `segment chips` therefore reads 512 px windows from a pinned mirror of
+  the same files; `segment provenance` checks the mirror against Zenodo, and
+  `open_scene_zenodo` streams the original zip members (the remotezip default is ~10× slower).

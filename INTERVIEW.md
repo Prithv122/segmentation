@@ -57,8 +57,9 @@ checks that the metric isn't broken (IoU 0), and MNDWI is a second index for con
 
 The test split was scored once per method, with rules committed before any data existed. The
 U-Net got 0.946 pooled IoU against the threshold's 0.960, a gap of −0.014 [−0.039, +0.012]. So
-it does not beat the threshold, and H1 is not supported. Its val-to-test drop was about zero,
-so it isn't overfitting to the validation scenes.
+it does not beat the threshold, and H1 is not supported. Its val-to-test drop was about zero.
+The val number is from the checkpoint val itself picked, so it leans high; even so, test did not
+fall below it, which says the validation scenes weren't flattering it.
 
 The pipeline itself is checked in several ways:
 
@@ -70,16 +71,18 @@ The pipeline itself is checked in several ways:
 
 ### Q5. Your network lost to a two-line threshold. Why should anyone hire you for ML?
 
-**A:** Because I measured it instead of assuming it, and I found out where each one fails. Pooled
-IoU is dominated by big, clear lakes, where an index is close to perfect, so there was no room
-for the network to win there.
+**A:** Because I measured it instead of assuming it, and I found out where each one fails. The
+threshold already scored 0.96 pooled IoU, so a perfect model could gain at most 0.04. My
+hypothesis, not yet tested by stratum, is that pooled IoU is dominated by large, clear water
+bodies where an index is already near perfect.
 
 On the four scenes where the threshold was weakest, which I wrote down before training, the
-U-Net scored 0.882 against 0.783. It does that by ignoring terrain shadow that NDWI calls
-water. But it misses rivers a few pixels wide and bright, turbid coastal water, where reading
-the spectrum per pixel is exactly right. That is post hoc and only four scenes, so I report it
-as exploratory. It does point to a concrete next experiment: use the threshold for recall and
-let the network veto shadow.
+U-Net scored 0.882 against 0.783. It won clearly on two of them; in one, NDWI calls mountain
+shadow water and the U-Net doesn't. It tied one and lost one. It also misses narrow rivers and
+bright, turbid coastal water, where reading the spectrum per pixel works better. That is four
+scenes, chosen by the baseline's own failures, which flatters the challenger, so I report it as
+exploratory. It does point to a concrete next experiment: use the threshold for recall and let
+the network veto false alarms like shadow.
 
 Knowing when a cheap baseline is good enough is a large part of ML engineering judgement.
 
@@ -91,5 +94,5 @@ Water maps from Sentinel-2 can come from a free spectral index or from a trained
 pre-registered a comparison on 16 scenes held out by the dataset's authors, with a
 scene-clustered bootstrap, and built a hash-verified chip pipeline over a 165 GB dataset to run
 it. The threshold won: 0.960 IoU against the U-Net's 0.946, and the gap's interval straddles
-zero. The network's real value showed up in specific places: it rejects mountain shadow, but it
-misses thin rivers. That is what I'd build on next.
+zero. The per-scene picture is the useful part: the network was more precise and ignored
+mountain shadow in one scene, but missed narrow rivers. A hybrid is what I'd test next.

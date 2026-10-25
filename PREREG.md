@@ -98,3 +98,12 @@ reported next to the original result.
   has no licence file, which failed the project's licence gate; S1S2-Water is CC BY 4.0 on the
   authors' Zenodo record. The framing changes from flood events to surface water and from a
   held-out event to held-out scenes; the model, inputs, baseline and decision rules do not.
+- **A1 (decided 2026-10-25 before any chip was scored; written down after the results).** Chip
+  *source*: image windows are read from a pinned unzipped mirror of the same v1.0.1 files
+  (Hugging Face `idomogalla/s1s2_water` at revision `e0551de`) instead of the Zenodo zips, which
+  sustained about 0.5 MB/s per connection. The chip rules above (grid, eligibility, sampling,
+  seeds, masks) are unchanged, and "Chips are rebuilt from Zenodo" in the Data section should read
+  "from Zenodo or the mirror". Equivalence was checked before scoring: 195/195 file sizes, 130/130
+  mask CRCs and 3/3 full image CRCs match the Zenodo zip directory, and one scene rebuilt from the
+  Zenodo zip gave byte-identical chip records (`results/provenance.csv`, commit `e34e2d9`). This
+  amendment should have been written at the time of the switch; it changes no rule and no number.

@@ -32,9 +32,9 @@ claim about flood mapping.
 |---|---|
 | Source | **S1S2-Water v1.0.1**, Wieland et al. 2024, IEEE JSTARS, [doi:10.1109/JSTARS.2023.3333969](https://doi.org/10.1109/JSTARS.2023.3333969), [Zenodo 11278238](https://zenodo.org/records/11278238) |
 | Licence | **CC BY 4.0** (on the authors' Zenodo record) |
-| Size | 65 Sentinel-2 L1C scenes, 10,980 × 10,980 px each; hand-labelled water and valid-pixel masks; about 165 GB as zipped |
+| Size | 65 Sentinel-2 L1C scenes, 10,980 × 10,980 px each; hand-labelled water and valid-pixel masks; six zip parts, 165.5 GB on Zenodo (the Sentinel-2 files alone are about 117 GB) |
 | Split | The authors' split **by scene**: 33 train / 16 val / 16 test; no MGRS tile in two splits |
-| Used here | 512 × 512 chips: 64 per train scene (half with water), 32 per val/test scene (uniform) — see `data/manifest.csv` |
+| Used here | 512 × 512 chips: 64 per train scene (up to half drawn from chips with ≥ 1% water), 32 per val/test scene (uniform) — see `data/manifest.csv` |
 
 Nothing from the dataset is committed. `data/scenes.csv` (scene metadata) and `data/manifest.csv`
 (chip positions and content hashes) are, so anyone can rebuild the exact chips and check them.
@@ -85,8 +85,8 @@ frozen rules in `PREREG.md`, which were not changed after any result was seen.
 | MNDWI-Otsu (context) | 0.966 [0.939, 0.978] | 0.983 | 0.977 | 0.989 | 0.631 | 0.857 |
 | Always land (context) | 0.000 | 0.000 | n/a | 0.000 | 0.000 | 0.000 |
 
-512 test chips (32 per scene) and 512 val chips; pooled IoU sums tp/fp/fn over all chips, macro IoU
-averages chips that contain water. Source: [`results/summary.md`](results/summary.md), rebuilt
+512 test chips (32 per scene) and 512 val chips; pooled IoU sums tp/fp/fn over all chips; macro IoU
+averages per-chip IoU, leaving out chips with no water in either the labels or the prediction. Source: [`results/summary.md`](results/summary.md), rebuilt
 from the committed per-chip CSVs by `segment eval` (CI checks that it regenerates byte for byte).
 
 | Pre-registered hypothesis | Rule | Result | Verdict |
@@ -104,24 +104,28 @@ it leans high, and the drop is still about zero.
 
 The four test scenes where NDWI-Otsu was weakest were written down **after** the baselines were
 scored and **before** the U-Net was trained (`NOTES.md` at `05f7e16`): s025, s047, s023, s035.
+Choosing scenes by the baseline's own failures favours any challenger (some of that weakness is
+chance), so read the first row as an upper estimate.
 
 | | U-Net | NDWI-Otsu |
 |---|---|---|
 | 4 weak scenes, pooled IoU | **0.882** (precision 0.989, recall 0.890) | 0.783 (precision 0.863, recall 0.894) |
 | other 12 scenes, pooled IoU | 0.948 (precision 0.992, recall 0.955) | **0.967** (precision 0.984, recall 0.983) |
 
-Scene by scene, the U-Net is better by more than 0.01 IoU in 5 scenes and worse in 7. Overlays of
-the largest wins and losses show two failure patterns:
+Within the four, the U-Net wins clearly on two (s035 +0.181, s023 +0.080), ties on s047 (+0.004)
+and loses on s025 (−0.094). Across all 16 it is better by more than 0.01 IoU in 5 scenes, worse in
+7, and within 0.01 in 4. Overlays of the largest win and losses show two patterns:
 
-- **The threshold's false alarms.** NDWI-Otsu marks terrain shadow on mountain slopes as water
-  (s035: U-Net 0.982, NDWI-Otsu 0.801). The U-Net uses context and leaves shadows alone, which is
-  where its precision comes from.
-- **The U-Net's misses.** It under-segments rivers a few pixels wide (s025: 0.300 vs 0.394) and
-  bright, shallow, turbid water along coasts (s031: 0.879 vs 0.958). The threshold reads the
-  spectrum pixel by pixel and catches both.
+- **The threshold's false alarms.** In s035 NDWI-Otsu marks terrain shadow on mountain slopes as
+  water (U-Net 0.982, NDWI-Otsu 0.801); the U-Net leaves the shadows alone. Its higher precision
+  overall (0.992 vs 0.979) is consistent with that, but only s035 has been inspected.
+- **The U-Net's misses.** It under-segments rivers a few pixels wide (s025: 0.300 vs 0.394; both
+  methods miss most of that river, recall 0.305 vs 0.407) and bright, shallow, turbid water along
+  a coast (s031: 0.879 vs 0.958), where reading the spectrum pixel by pixel does better.
 
 Four scenes is too few for an interval worth quoting. The pattern suggests a hybrid, using the
-threshold for recall and the network to veto shadow, as the next experiment rather than a result.
+threshold for recall and the network to veto false alarms such as shadow, as the next experiment
+rather than a result.
 The overlays are not in the repo, because they contain the dataset's imagery; `segment overlay`
 recreates them from the chips.
 
@@ -135,7 +139,8 @@ uv run pytest                          # fast suite; add -m slow to train a tiny
 uv run segment eval                    # rebuild results/summary.md from the committed CSVs
 ```
 
-Rebuild the data and the baselines (CPU, about an hour for the chips, ~4.5 GB on disk):
+Rebuild the data and the baselines (CPU; the chips took about 50 minutes with 8 workers, 4.6 GB
+on disk):
 
 ```bash
 uv run segment chips --workers 8       # data/chips/, checked against data/manifest.csv
@@ -153,7 +158,7 @@ uv run segment overlay s035_r06144_c09216 s025_r06144_c05632 --unet-masks result
 ```
 
 Train the U-Net: open `notebooks/train_kaggle.ipynb` on Kaggle (GPU T4, Internet on), set
-`REPO_REF` to a commit, *Run all* (about 22 minutes: chip rebuild and hash check, then training
+`REPO_REF` to a commit, *Run all* (about 19 minutes: chip rebuild and hash check, then training
 with early stopping). It writes `per_chip_unet_{val,test}.csv`, `run_record.json` and the
 predicted masks that are committed under `results/`.
 

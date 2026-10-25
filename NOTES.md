@@ -39,11 +39,11 @@ Working notes: what broke, what was tried, why X over Y.
 - **Chip hash = content hash.** The manifest's `sha256` hashes the arrays, not the `.npz` bytes,
   because compressed bytes depend on the zlib build and a Kaggle rebuild must verify against the
   local manifest.
-- **Bootstrap unit = scene** (owner's pre-registration review): chips from one scene are
+- **Bootstrap unit = scene** (decided in the pre-registration review): chips from one scene are
   correlated, so whole scenes are resampled and pooled IoU is recomputed per replicate. With
   16 test scenes the interval will be wide; that is the honest width.
 
-### 2026-10-25 — chips built, provenance, baselines, fresh-eyes review
+### 2026-10-25 — chips built, provenance, baselines, independent code review
 
 - **Chips:** 3,136 (2,112 / 512 / 512 over 33 / 16 / 16 scenes), every scene had its full
   quota; `segment audit` clean; `segment verify` all match. Built from the mirror with 8 workers
@@ -56,7 +56,8 @@ Working notes: what broke, what was tried, why X over Y.
   failures that make no progress.
 - **Baselines fitted on train only:** NDWI-Otsu threshold 0.0064 (near the textbook 0), MNDWI-Otsu
   0.133, constant = land. Val and test scored once, CSVs committed before any summary was read.
-- **Fresh-eyes review** (clean context, code and PREREG only) found no bug that changes a number.
+- **Independent code review** (a second read of the code against PREREG only) found no bug
+  that changes a number.
   Acted on before looking at any test summary:
   - `segment eval` now refuses a duplicated per-chip CSV (e.g. a "(1)" re-download) and refuses to
     compare U-Net and NDWI-Otsu if they scored different test chips.
@@ -80,8 +81,8 @@ Working notes: what broke, what was tried, why X over Y.
   data). The verdict will be "not supported" or "inconclusive", and the write-up says plainly
   that the pre-registered margin was unattainable on clear-sky surface water.
 - **Where the threshold fails** (pooled IoU hides it: macro IoU is 0.607): s025 (0.394, boreal
-  forest, little water), s047 (0.759, coastal wetland in Colombia: flooded vegetation and marsh
-  are labelled water, and NDWI sees vegetation), s023 and s035 (~0.78-0.80). These scenes and the
+  forest, little water), s047 (0.759, T18PWS in northern Colombia, metadata land cover "cropland";
+  the overlay shows marsh and flooded vegetation labelled water, which NDWI reads as vegetation), s023 and s035 (~0.78-0.80). These scenes and the
   macro IoU are where a U-Net can add value; they are reported as exploratory, not as H1.
 - **Local CI replay** (the workflow's steps, in order) on a fresh clone of `d0b106c` with a fresh
   install (`UV_NO_CACHE=1`): ruff clean, 165 passed, coverage 82%, slow CPU training test passed,
@@ -91,7 +92,7 @@ Working notes: what broke, what was tried, why X over Y.
 
 ### 2026-10-25 — published, Kaggle run, results
 
-- **Published** on the owner's yes: `Prithv122/segmentation`. Pre-push gate: no imagery, labels,
+- **Published**: `Prithv122/segmentation`. Pre-push gate: no imagery, labels,
   arrays or weights tracked, no key patterns, one author.
 - **Hosted CI failed on `05f7e16` with a real bug the Windows replay could not see.** On Linux,
   uv took torchvision from PyPI (a CUDA build) next to CPU torch, giving
