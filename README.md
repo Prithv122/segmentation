@@ -73,8 +73,57 @@ flowchart LR
 
 ## 5. Results
 
-_Pending: chips are being built; nothing has been scored yet. Every number here will come from
-`results/summary.md`, regenerated from committed per-chip CSVs by `segment eval`._
+**The U-Net does not beat the threshold.** On the 16 held-out test scenes, pooled water IoU is
+**0.946 for the U-Net against 0.960 for NDWI-Otsu**. The paired difference is **−0.014**, with a 95%
+scene-bootstrap interval of **[−0.039, +0.012]**. Both pre-registered verdicts were decided by the
+frozen rules in `PREREG.md`, which were not changed after any result was seen.
+
+| Method | Test IoU [95% scene CI] | Dice | Precision | Recall | Macro IoU | Val IoU |
+|---|---|---:|---:|---:|---:|---:|
+| U-Net (ResNet-34, RGB+NIR) | 0.946 [0.920, 0.969] | 0.972 | 0.992 | 0.953 | 0.600 | 0.941 |
+| **NDWI-Otsu** (primary baseline) | **0.960** [0.943, 0.972] | 0.980 | 0.979 | 0.980 | 0.607 | 0.889 |
+| MNDWI-Otsu (context) | 0.966 [0.939, 0.978] | 0.983 | 0.977 | 0.989 | 0.631 | 0.857 |
+| Always land (context) | 0.000 | 0.000 | n/a | 0.000 | 0.000 | 0.000 |
+
+512 test chips (32 per scene) and 512 val chips; pooled IoU sums tp/fp/fn over all chips, macro IoU
+averages chips that contain water. Source: [`results/summary.md`](results/summary.md), rebuilt
+from the committed per-chip CSVs by `segment eval` (CI checks that it regenerates byte for byte).
+
+| Pre-registered hypothesis | Rule | Result | Verdict |
+|---|---|---|---|
+| **H1** U-Net beats NDWI-Otsu by ≥ 0.05 IoU | paired scene-bootstrap CI lower bound ≥ 0.05 | gap −0.014 [−0.039, +0.012] | **not supported** |
+| **H2** generalises to new scenes | val → test drop ≤ 0.15 | drop −0.005 (0.941 → 0.946) | **within bound** |
+
+**H1 could not have been met.** The baseline turned out to sit at 0.960, so even a perfect model
+could gain at most 0.040, below the 0.05 margin. The margin was set before any data existed and
+is reported as frozen; the informative part is the sign of the gap, and the U-Net's interval
+straddles zero. H2 is a diagnostic: the val number belongs to the checkpoint val itself chose, so
+it leans high, and the drop is still about zero.
+
+### Exploratory: where each method fails (not pre-registered)
+
+The four test scenes where NDWI-Otsu was weakest were written down **after** the baselines were
+scored and **before** the U-Net was trained (`NOTES.md` at `05f7e16`): s025, s047, s023, s035.
+
+| | U-Net | NDWI-Otsu |
+|---|---|---|
+| 4 weak scenes, pooled IoU | **0.882** (precision 0.989, recall 0.890) | 0.783 (precision 0.863, recall 0.894) |
+| other 12 scenes, pooled IoU | 0.948 (precision 0.992, recall 0.955) | **0.967** (precision 0.984, recall 0.983) |
+
+Scene by scene, the U-Net is better by more than 0.01 IoU in 5 scenes and worse in 7. Overlays of
+the largest wins and losses show two failure patterns:
+
+- **The threshold's false alarms.** NDWI-Otsu marks terrain shadow on mountain slopes as water
+  (s035: U-Net 0.982, NDWI-Otsu 0.801). The U-Net uses context and leaves shadows alone, which is
+  where its precision comes from.
+- **The U-Net's misses.** It under-segments rivers a few pixels wide (s025: 0.300 vs 0.394) and
+  bright, shallow, turbid water along coasts (s031: 0.879 vs 0.958). The threshold reads the
+  spectrum pixel by pixel and catches both.
+
+Four scenes is too few for an interval worth quoting. The pattern suggests a hybrid, using the
+threshold for recall and the network to veto shadow, as the next experiment rather than a result.
+The overlays are not in the repo, because they contain the dataset's imagery; `segment overlay`
+recreates them from the chips.
 
 ## 6. How to run
 
@@ -96,8 +145,17 @@ uv run segment provenance              # mirror vs Zenodo: sizes and mask CRCs
 uv run segment baseline                # NDWI-Otsu, MNDWI-Otsu, constant on val and test
 ```
 
+Overlays (RGB | labels | each method's hits, false alarms and misses), from the chips and the
+committed U-Net predictions:
+
+```bash
+uv run segment overlay s035_r06144_c09216 s025_r06144_c05632 --unet-masks results/predictions/masks_unet_test.npz
+```
+
 Train the U-Net: open `notebooks/train_kaggle.ipynb` on Kaggle (GPU T4, Internet on), set
-`REPO_REF`, *Run all*. Download `results/` and commit it.
+`REPO_REF` to a commit, *Run all* (about 22 minutes: chip rebuild and hash check, then training
+with early stopping). It writes `per_chip_unet_{val,test}.csv`, `run_record.json` and the
+predicted masks that are committed under `results/`.
 
 ## 7. What I'd change at 100× scale
 

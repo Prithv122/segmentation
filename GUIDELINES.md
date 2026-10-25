@@ -18,11 +18,12 @@ baselines and evaluation run on CPU.
 
 ## Acceptance criteria
 
-- [ ] `data/manifest.csv` committed; `segment audit` clean (no scene or tile in two splits)
-- [ ] Baselines (NDWI-Otsu primary, MNDWI-Otsu, constant) fitted on train only, scored on val/test
-- [ ] U-Net trained once on Kaggle with the frozen config; checkpoint chosen on val; test scored once
-- [ ] `results/summary.md` built from committed per-chip CSVs; H1/H2 verdicts by the frozen rules
-- [ ] Overlays of best and worst test scenes per method; failure modes written up
+- [x] `data/manifest.csv` committed; `segment audit` clean (no scene or tile in two splits)
+- [x] Baselines (NDWI-Otsu primary, MNDWI-Otsu, constant) fitted on train only, scored on val/test
+- [x] U-Net trained once on Kaggle with the frozen config; checkpoint chosen on val; test scored once
+- [x] `results/summary.md` built from committed per-chip CSVs; H1/H2 verdicts by the frozen rules
+- [x] Overlays of best and worst test scenes per method; failure modes written up (overlays stay
+  local: they contain dataset imagery)
 - [ ] Runs from a clean clone using only the documented steps
 - [ ] Tests, lint and CI green; README results come from real runs
 

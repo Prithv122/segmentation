@@ -89,6 +89,35 @@ Working notes: what broke, what was tried, why X over Y.
   the hosted runner: Windows 11, `--basetemp` in scratch, `-p no:cacheprovider`. Hosted CI not
   run (no GitHub repo yet).
 
+### 2026-10-25 — published, Kaggle run, results
+
+- **Published** on the owner's yes: `Prithv122/segmentation`. Pre-push gate: no imagery, labels,
+  arrays or weights tracked, no key patterns, one author.
+- **Hosted CI failed on `05f7e16` with a real bug the Windows replay could not see.** On Linux,
+  uv took torchvision from PyPI (a CUDA build) next to CPU torch, giving
+  `operator torchvision::nms does not exist`. Fix `3e7dd8f` routes torchvision through the CPU
+  index. It was replayed in a `python:3.12-bookworm` container before the push, and hosted CI run
+  40144137619 then passed. Lesson: replay CI on the runner's OS, not just on the dev machine.
+- **Kaggle kernel v1** (private, T4, `REPO_REF = 3e7dd8f` set only in the submitted copy): 3,136
+  chips rebuilt from the mirror and every content hash matched the committed manifest. Training
+  used the frozen config: best val epoch 4, early stop at epoch 12, about 25 s per epoch. Raw
+  output is kept in `_extra-files/45-segmentation/kaggle_v1/` (outside the repo). The per-chip CSVs,
+  run record, predicted masks and kernel log were committed as produced (`c4118a7`) before
+  `segment eval` ran.
+- **Results.** Test pooled IoU: U-Net 0.946 [0.920, 0.969], NDWI-Otsu 0.960 [0.943, 0.972]. Gap
+  −0.014 [−0.039, +0.012] → **H1 not supported** (it could not have been). U-Net val→test drop
+  −0.005 → **H2 within bound**. Macro IoU 0.600 vs 0.607.
+- **Exploratory, on the weak-scene set fixed at `05f7e16`:** U-Net 0.882 vs NDWI-Otsu 0.783 on
+  s025/s047/s023/s035, but 0.948 vs 0.967 on the other 12; better in 5 scenes, worse in 7.
+  Overlays (local only, as they contain dataset imagery):
+  - s035: the threshold calls mountain shadow water; the U-Net doesn't.
+  - s025: the U-Net misses a river a few pixels wide.
+  - s031: the U-Net misses bright turbid coastal shallows.
+  - Overall the U-Net trades recall for precision (0.953 / 0.992 vs 0.980 / 0.979).
+- **Not done on purpose:** no threshold tuning on the sigmoid, no second training run, no test
+  rescoring. Any of these would be an amendment. The obvious next experiment is a hybrid
+  (threshold for recall, network vetoes shadow), which needs its own pre-registration.
+
 ---
 
 ## Rejected approaches
@@ -103,5 +132,7 @@ Working notes: what broke, what was tried, why X over Y.
 | Chip-level bootstrap | Treats correlated chips from one scene as independent; CI too narrow |
 
 ## Open questions
+
+- [ ] Would a hybrid (NDWI-Otsu ∪ U-Net, minus U-Net-rejected shadow) beat both? Needs a new pre-registration and fresh held-out scenes.
 
 - [x] Does the mirror match Zenodo? Yes: sizes, mask CRCs, sampled image CRCs, and one scene rebuilt chip-for-chip
