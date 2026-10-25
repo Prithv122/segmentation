@@ -25,7 +25,7 @@ baselines and evaluation run on CPU.
 - [x] Overlays of best and worst test scenes per method; failure modes written up (overlays stay
   local: they contain dataset imagery)
 - [x] Runs from a clean clone using only the documented steps
-- [ ] Tests, lint and CI green; README results come from real runs
+- [x] Tests, lint and CI green; README results come from real runs
 
 ## Conventions
 

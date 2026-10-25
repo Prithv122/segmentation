@@ -119,6 +119,29 @@ Working notes: what broke, what was tried, why X over Y.
   rescoring. Any of these would be an amendment. The obvious next experiment is a hybrid
   (threshold for recall, network vetoes shadow), which needs its own pre-registration.
 
+### 2026-10-25 — ship gate
+
+- **Docs fact-check** (an independent pass over every number in README, INTERVIEW, RESUME_BULLET,
+  NOTES and GUIDELINES against `results/` and git history; about 170 claims). All headline
+  numbers held. Fixed:
+  - the stale Zenodo speed and chip-source wording;
+  - PREREG amendment A1 for the mirror switch, which was decided before scoring and written late;
+  - run times and sizes;
+  - "up to half" watery train chips, and the exact macro-IoU definition;
+  - an s047 land-cover claim not supported by the metadata;
+  - causal overclaims about shadow, which is documented for s035 only;
+  - the selection effect of picking weak scenes by the baseline's failures.
+- **Clean clone, README steps verbatim** (Windows, fresh clone of `8884700`, `UV_NO_CACHE=1`):
+  `uv sync --all-groups --all-extras`, 165 passed, `segment eval` regenerates `results/`
+  byte-identically, `segment --help` lists every documented command.
+- **Local CI replay on Linux** (`python:3.12-bookworm` container, fresh clone, the workflow's steps
+  in order): green on `8884700`. It is re-run on the final commit below before any push.
+- **Security:**
+  - no dataset imagery or labels tracked; the only arrays are the U-Net's own predicted masks;
+  - no key patterns, no `.env`, no assistant-named file, attribution grep 0, one author;
+  - `pip-audit` 2.9.0: no known vulnerabilities in 39 PyPI packages, and none for torch 2.14.1 /
+    torchvision 0.29.1 (base versions of the `+cpu` wheels).
+
 ---
 
 ## Rejected approaches
